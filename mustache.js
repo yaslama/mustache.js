@@ -1,40 +1,120 @@
-/*
-  mustache.js — Logic-less templates in JavaScript
+/*!
+ * mustache.js — Logic-less {{mustache}} templates with JavaScript
+ * http://github.com/janl/mustache.js
+ */
+var Mustache = (typeof module != "undefined" && module.exports) || {};
 
-  See http://mustache.github.com/ for more info.
-*/
+(function (exports) {
 
-var Mustache = function () {
+  exports.name = "mustache.js";
+  exports.version = "0.4.0";
+  exports.tags = ["{{", "}}"];
+  exports.parse = parse;
+  exports.compile = compile;
+  exports.render = render;
+  exports.clearCache = clearCache;
+
+  // For backwards compat.
+  exports.to_html = render;
+
   var _toString = Object.prototype.toString;
+  var _isArray = Array.isArray;
+  var _forEach = Array.prototype.forEach;
+  var _trim = String.prototype.trim;
 
-  Array.isArray = Array.isArray || function (obj) {
-    return _toString.call(obj) == "[object Array]";
+  function isObject(obj) {
+    return _toString.call(obj) == "[object Object]";
   }
 
-  var _trim = String.prototype.trim, trim;
+  var isArray;
+  if (_isArray) {
+    isArray = _isArray;
+  } else {
+    isArray = function (obj) {
+      return _toString.call(obj) == "[object Array]";
+    }
+  }
 
+  var forEach;
+  if (_forEach) {
+    forEach = function (obj, callback, scope) {
+      return _forEach.call(obj, callback, scope);
+    }
+  } else {
+    forEach = function (obj, callback, scope) {
+      for (var i = 0, len = obj.length; i < len; ++i) {
+        callback.call(scope, obj[i], i, obj);
+      }
+    }
+  }
+
+  var spaceRe = /^\s*$/;
+
+  function isWhitespace(string) {
+    return spaceRe.test(string);
+  }
+
+  var trim;
   if (_trim) {
-    trim = function (text) {
-      return text == null ? "" : _trim.call(text);
+    trim = function (string) {
+      return string == null ? "" : _trim.call(string);
     }
   } else {
     var trimLeft, trimRight;
 
-    // IE doesn't match non-breaking spaces with \s.
-    if ((/\S/).test("\xA0")) {
-      trimLeft = /^[\s\xA0]+/;
-      trimRight = /[\s\xA0]+$/;
-    } else {
+    if (isWhitespace("\xA0")) {
       trimLeft = /^\s+/;
       trimRight = /\s+$/;
+    } else {
+      // IE doesn't match non-breaking spaces with \s, thanks jQuery.
+      trimLeft = /^[\s\xA0]+/;
+      trimRight = /[\s\xA0]+$/;
     }
 
-    trim = function (text) {
-      return text == null ? "" :
-        text.toString().replace(trimLeft, "").replace(trimRight, "");
+    trim = function (string) {
+      return string == null ? "" :
+        String(string).replace(trimLeft, "").replace(trimRight, "");
     }
   }
 
+  /**
+   * Looks up the value of the given `name` in the given context `stack`.
+   */
+  function findName(name, stack) {
+    var context, value;
+
+    var i = stack.length;
+    while (i) {
+      context = stack[--i];
+
+      if (name in context) {
+        value = context[name];
+        break;
+      }
+    }
+
+    // If the value is a function, call it in the current context.
+    if (typeof value == "function") {
+      value = value.call(stack[stack.length - 1]);
+    }
+
+    if (value == null) {
+      return "";
+    }
+
+    return value;
+  }
+
+  /**
+   * Returns a bit of code that can be used to find the given `name`.
+   */
+  function findFor(name) {
+    return name == "." ? "stack[stack.length - 1]" : 'find("' + name + '")';
+  }
+
+  /**
+   * Returns an HTML-safe version of the given `string`.
+   */
   function escapeHTML(string) {
     return String(string)
       .replace(/&(?!\w+;)/g, "&amp;")
@@ -44,387 +124,460 @@ var Mustache = function () {
       .replace(/'/g, "&#39;");
   }
 
-  var regexCache = {};
-  var Renderer = function () {};
-
-  Renderer.prototype = {
-    otag: "{{",
-    ctag: "}}",
-    pragmas: {},
-    buffer: [],
-    pragmas_implemented: {
-      "IMPLICIT-ITERATOR": true
-    },
-    context: {},
-
-    render: function (template, context, partials, in_recursion) {
-      // reset buffer & set context
-      if (!in_recursion) {
-        this.context = context;
-        this.buffer = []; // TODO: make this non-lazy
+  function sendSection(send, value, callback, stack, inverted) {
+    if (inverted) {
+      // From the spec: inverted sections may render text once based on the
+      // inverse value of the key. That is, they will be rendered if the key
+      // doesn't exist, is false, or is an empty list.
+      if (value == null || value === false || (isArray(value) && value.length == 0)) {
+        send(callback());
       }
-
-      // fail fast
-      if (!this.includes("", template)) {
-        if (in_recursion) {
-          return template;
-        } else {
-          this.send(template);
-          return;
-        }
-      }
-
-      // get the pragmas together
-      template = this.render_pragmas(template);
-
-      // render the template
-      var html = this.render_section(template, context, partials);
-
-      // render_section did not find any sections, we still need to render the tags
-      if (html === false) {
-        html = this.render_tags(template, context, partials, in_recursion);
-      }
-
-      if (in_recursion) {
-        return html;
-      } else {
-        this.sendLines(html);
-      }
-    },
-
-    /*
-      Sends parsed lines
-    */
-    send: function (line) {
-      if (line !== "") {
-        this.buffer.push(line);
-      }
-    },
-
-    sendLines: function (text) {
-      if (text) {
-        var lines = text.split("\n");
-        for (var i = 0; i < lines.length; i++) {
-          this.send(lines[i]);
-        }
-      }
-    },
-
-    /*
-      Looks for %PRAGMAS
-    */
-    render_pragmas: function (template) {
-      // no pragmas
-      if (!this.includes("%", template)) {
-        return template;
-      }
-
-      var that = this;
-      var regex = this.getCachedRegex("render_pragmas", function (otag, ctag) {
-        return new RegExp(otag + "%([\\w-]+) ?([\\w]+=[\\w]+)?" + ctag, "g");
+    } else if (isArray(value)) {
+      forEach(value, function (value) {
+        stack.push(value);
+        send(callback());
+        stack.pop();
       });
-
-      return template.replace(regex, function (match, pragma, options) {
-        if (!that.pragmas_implemented[pragma]) {
-          throw({message:
-            "This implementation of mustache doesn't understand the '" +
-            pragma + "' pragma"});
-        }
-        that.pragmas[pragma] = {};
-        if (options) {
-          var opts = options.split("=");
-          that.pragmas[pragma][opts[0]] = opts[1];
-        }
-        return "";
-        // ignore unknown pragmas silently
-      });
-    },
-
-    /*
-      Tries to find a partial in the curent scope and render it
-    */
-    render_partial: function (name, context, partials) {
-      name = trim(name);
-      if (!partials || partials[name] === undefined) {
-        throw({message: "unknown_partial '" + name + "'"});
-      }
-      if (!context || typeof context[name] != "object") {
-        return this.render(partials[name], context, partials, true);
-      }
-      return this.render(partials[name], context[name], partials, true);
-    },
-
-    /*
-      Renders inverted (^) and normal (#) sections
-    */
-    render_section: function (template, context, partials) {
-      if (!this.includes("#", template) && !this.includes("^", template)) {
-        // did not render anything, there were no sections
-        return false;
-      }
-
-      var that = this;
-
-      var regex = this.getCachedRegex("render_section", function (otag, ctag) {
-        // This regex matches _the first_ section ({{#foo}}{{/foo}}), and captures the remainder
-        return new RegExp(
-          "^([\\s\\S]*?)" +         // all the crap at the beginning that is not {{*}} ($1)
-
-          otag +                    // {{
-          "(\\^|\\#)\\s*(.+)\\s*" + //  #foo (# == $2, foo == $3)
-          ctag +                    // }}
-
-          "\n*([\\s\\S]*?)" +       // between the tag ($2). leading newlines are dropped
-
-          otag +                    // {{
-          "\\/\\s*\\3\\s*" +        //  /foo (backreference to the opening tag).
-          ctag +                    // }}
-
-          "\\s*([\\s\\S]*)$",       // everything else in the string ($4). leading whitespace is dropped.
-
-        "g");
-      });
-
-
-      // for each {{#foo}}{{/foo}} section do...
-      return template.replace(regex, function (match, before, type, name, content, after) {
-        // before contains only tags, no sections
-        var renderedBefore = before ? that.render_tags(before, context, partials, true) : "",
-
-        // after may contain both sections and tags, so use full rendering function
-            renderedAfter = after ? that.render(after, context, partials, true) : "",
-
-        // will be computed below
-            renderedContent,
-
-            value = that.find(name, context);
-
-        if (type === "^") { // inverted section
-          if (!value || Array.isArray(value) && value.length === 0) {
-            // false or empty list, render it
-            renderedContent = that.render(content, context, partials, true);
-          } else {
-            renderedContent = "";
-          }
-        } else if (type === "#") { // normal section
-          if (Array.isArray(value)) { // Enumerable, Let's loop!
-            renderedContent = that.map(value, function (row) {
-              return that.render(content, that.create_context(row), partials, true);
-            }).join("");
-          } else if (that.is_object(value)) { // Object, Use it as subcontext!
-            renderedContent = that.render(content, that.create_context(value),
-              partials, true);
-          } else if (typeof value == "function") {
-            // higher order section
-            renderedContent = value.call(context, content, function (text) {
-              return that.render(text, context, partials, true);
-            });
-          } else if (value) { // boolean section
-            renderedContent = that.render(content, context, partials, true);
-          } else {
-            renderedContent = "";
-          }
-        }
-
-        return renderedBefore + renderedContent + renderedAfter;
-      });
-    },
-
-    /*
-      Replace {{foo}} and friends with values from our view
-    */
-    render_tags: function (template, context, partials, in_recursion) {
-      // tit for tat
-      var that = this;
-
-      var new_regex = function () {
-        return that.getCachedRegex("render_tags", function (otag, ctag) {
-          return new RegExp(otag + "(=|!|>|\\{|%)?([^\\/#\\^]+?)\\1?" + ctag + "+", "g");
-        });
+    } else if (isObject(value)) {
+      stack.push(value);
+      send(callback());
+      stack.pop();
+    } else if (typeof value == "function") {
+      var scope = stack[stack.length - 1];
+      var scopedRender = function (template) {
+        return render(template, scope);
       };
-
-      var regex = new_regex();
-      var tag_replace_callback = function (match, operator, name) {
-        switch(operator) {
-        case "!": // ignore comments
-          return "";
-        case "=": // set new delimiters, rebuild the replace regexp
-          that.set_delimiters(name);
-          regex = new_regex();
-          return "";
-        case ">": // render partial
-          return that.render_partial(name, context, partials);
-        case "{": // the triple mustache is unescaped
-          return that.find(name, context);
-        default: // escape the value
-          return escapeHTML(that.find(name, context));
-        }
-      };
-      var lines = template.split("\n");
-      for(var i = 0; i < lines.length; i++) {
-        lines[i] = lines[i].replace(regex, tag_replace_callback, this);
-        if (!in_recursion) {
-          this.send(lines[i]);
-        }
-      }
-
-      if (in_recursion) {
-        return lines.join("\n");
-      }
-    },
-
-    set_delimiters: function (delimiters) {
-      var dels = delimiters.split(" ");
-      this.otag = this.escape_regex(dels[0]);
-      this.ctag = this.escape_regex(dels[1]);
-    },
-
-    escape_regex: function (text) {
-      // thank you Simon Willison
-      if (!arguments.callee.sRE) {
-        var specials = [
-          '/', '.', '*', '+', '?', '|',
-          '(', ')', '[', ']', '{', '}', '\\'
-        ];
-        arguments.callee.sRE = new RegExp(
-          '(\\' + specials.join('|\\') + ')', 'g'
-        );
-      }
-      return text.replace(arguments.callee.sRE, '\\$1');
-    },
-
-    /*
-      find `name` in current `context`. That is find me a value
-      from the view object
-    */
-    find: function (name, context) {
-      name = trim(name);
-
-      // Checks whether a value is thruthy or false or 0
-      function is_kinda_truthy(bool) {
-        return bool === false || bool === 0 || bool;
-      }
-
-      var value;
-
-      // check for dot notation eg. foo.bar
-      if (name.match(/([a-z_]+)\./ig)) {
-        var childValue = this.walk_context(name, context);
-        if (is_kinda_truthy(childValue)) {
-          value = childValue;
-        }
-      } else {
-        if (is_kinda_truthy(context[name])) {
-          value = context[name];
-        } else if (is_kinda_truthy(this.context[name])) {
-          value = this.context[name];
-        }
-      }
-
-      if (typeof value == "function") {
-        return value.apply(context);
-      }
-      if (value !== undefined) {
-        return value;
-      }
-      // silently ignore unkown variables
-      return "";
-    },
-
-    walk_context: function (name, context) {
-      var path = name.split('.');
-      // if the var doesn't exist in current context, check the top level context
-      var value_context = (context[path[0]] != undefined) ? context : this.context;
-      var value = value_context[path.shift()];
-      while (value != undefined && path.length > 0) {
-        value_context = value;
-        value = value[path.shift()];
-      }
-      // if the value is a function, call it, binding the correct context
-      if (typeof value == "function") {
-        return value.apply(value_context);
-      }
-      return value;
-    },
-
-    // Utility methods
-
-    /* includes tag */
-    includes: function (needle, haystack) {
-      return haystack.indexOf(this.otag + needle) != -1;
-    },
-
-    // by @langalex, support for arrays of strings
-    create_context: function (_context) {
-      if (this.is_object(_context)) {
-        return _context;
-      } else {
-        var iterator = ".";
-        if (this.pragmas["IMPLICIT-ITERATOR"]) {
-          iterator = this.pragmas["IMPLICIT-ITERATOR"].iterator;
-        }
-        var ctx = {};
-        ctx[iterator] = _context;
-        return ctx;
-      }
-    },
-
-    is_object: function (a) {
-      return a && typeof a == "object";
-    },
-
-    /*
-      Why, why, why? Because IE. Cry, cry cry.
-    */
-    map: function (array, fn) {
-      if (typeof array.map == "function") {
-        return array.map(fn);
-      } else {
-        var r = [];
-        var l = array.length;
-        for(var i = 0; i < l; i++) {
-          r.push(fn(array[i]));
-        }
-        return r;
-      }
-    },
-
-    getCachedRegex: function (name, generator) {
-      var byOtag = regexCache[this.otag];
-      if (!byOtag) {
-        byOtag = regexCache[this.otag] = {};
-      }
-
-      var byCtag = byOtag[this.ctag];
-      if (!byCtag) {
-        byCtag = byOtag[this.ctag] = {};
-      }
-
-      var regex = byCtag[name];
-      if (!regex) {
-        regex = byCtag[name] = generator(this.otag, this.ctag);
-      }
-
-      return regex;
+      send(value.call(scope, callback(), scopedRender) || "");
+    } else if (value) {
+      send(callback());
     }
-  };
+  }
 
-  return({
-    name: "mustache.js",
-    version: "0.4.0-dev",
+  /**
+   * The base class for all template errors.
+   */
+  function TemplateError(message, template, file, line) {
+    Error.call(this);
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, this.constructor); // V8
+    }
+    this.name = "TemplateError";
+    this.message = message;
+    addDebugInfo(this, template, file, line);
+  }
 
-    /*
-      Turns a template and view into HTML
-    */
-    to_html: function (template, view, partials, send_fun) {
-      var renderer = new Renderer();
-      if (send_fun) {
-        renderer.send = send_fun;
+  /**
+   * Adds the `template`, `file`, and `line` properties to the given `error`
+   * object and alters the message to provide more useful debugging information.
+   */
+  function addDebugInfo(error, template, file, line) {
+    var lines = template.split("\n"),
+        start = Math.max(line - 3, 0),
+        end = Math.min(lines.length, line + 3),
+        context = lines.slice(start, end);
+
+    var c;
+    for (var i = 0, len = context.length; i < len; ++i) {
+      c = i + start + 1;
+      context[i] = (c == line ? " >> " : "    ") + context[i];
+    }
+
+    error.template = template;
+    error.file = file;
+    error.line = line;
+    error.message = [
+      (file || "template") + ":" + line,
+      context.join("\n"),
+      "",
+      error.message
+    ].join("\n");
+  }
+
+  // The following two snippets of code are used to buffer content while the
+  // template is rendering.
+
+  var bufferStart = [
+    'var callback = (function () {',
+    '  var buffer, send = function (chunk) { buffer.push(chunk); };',
+    '  return function () {',
+    '    buffer = [];'
+  ].join("\n");
+
+  var bufferEnd = [
+    '    return buffer.join("");',
+    '  };',
+    '})();'
+  ].join("\n");
+
+  /**
+   * Parses the given `template` and returns the source of a function that,
+   * with the proper arguments, will render the template. Recognized options
+   * include the following:
+   *
+   *   - tags     An array of open and close tags the `template` uses. Defaults
+   *              to the value of Mustache.tags
+   *   - debug    Set `true` to print the body of the generated function
+   *   - space    Set `true` to preserve whitespace from lines that otherwise
+   *              contain only a {{tag}}. Defaults to `false`
+   */
+  function parse(template, options) {
+    options = options || {};
+
+    var tags = options.tags || exports.tags,
+        openTag = tags[0],
+        closeTag = tags[tags.length - 1];
+
+    var code = [
+      [
+        "var line = 1;", // keep track of source line number
+        "try {",
+        'send("'
+      ].join("\n")
+    ];
+
+    var spaces = [],      // indices of whitespace in code for the current line
+        nonSpace = false, // is there a non-space char on the current line?
+        hasTag = false;   // is there a content {{tag}} on the current line?
+
+    // Strips all space characters from the code array for the current line
+    // if there was a {{tag}} on it and otherwise only spaces.
+    var stripSpace = function () {
+      if (!hasTag && !nonSpace && !options.space) {
+        while (spaces.length) {
+          code.splice(spaces.pop(), 1);
+        }
       }
-      renderer.render(template, view || {}, partials);
-      if (!send_fun) {
-        return renderer.buffer.join("\n");
+
+      spaces = [];
+      nonSpace = false;
+      hasTag = false;
+    };
+
+    var lineno = 1, c, sectionStack = [], callback, line, nextOpenTag, nextCloseTag;
+    for (var i = 0, len = template.length; i < len; ++i) {
+      if (template.slice(i, i + openTag.length) == openTag) {
+        i += openTag.length;
+        c = template.substr(i, 1);
+        line = "line = " + lineno + ";";
+        nextOpenTag = openTag;
+        nextCloseTag = closeTag;
+
+        // TODO: This switch statement is probably slow. Does it matter?
+        switch (c) {
+        case "!": // Comment.
+          i++;
+          callback = null;
+          break;
+
+        case "^": // Start "empty variable" section.
+          i++;
+          callback = function (source) {
+            var name = trim(source);
+
+            if (name == "") {
+              throw new TemplateError("Section name may not be empty");
+            }
+
+            sectionStack.push({name: name, inverted: true});
+
+            return [
+              '");',
+              line,
+              'var value = ' + findFor(name) + ';',
+              bufferStart,
+              'send("'
+            ].join("\n");
+          };
+          break;
+
+        case "#": // Start section.
+          i++;
+          callback = function (source) {
+            var name = trim(source);
+
+            if (name == "") {
+              throw new TemplateError("Section name may not be empty");
+            }
+
+            sectionStack.push({name: name});
+
+            return [
+              '");',
+              line,
+              'var value = ' + findFor(name) + ';',
+              bufferStart,
+              'send("'
+            ].join("\n");
+          };
+          break;
+
+        case "/": // End section.
+          i++;
+          callback = function (source) {
+            var name = trim(source);
+            var openName = sectionStack.length != 0 && sectionStack[sectionStack.length - 1].name;
+
+            if (!openName || name != openName) {
+              throw new TemplateError('Section named "' + name + '" was never opened');
+            }
+
+            var section = sectionStack.pop();
+            var code = [
+              '");',
+              bufferEnd
+            ];
+
+            if (section.inverted) {
+              code.push("sendSection(send,value,callback,stack,true);");
+            } else {
+              code.push("sendSection(send,value,callback,stack);");
+            }
+
+            code.push('send("');
+
+            return code.join("\n");
+          };
+          break;
+
+        case "=": // Change open/close tags, e.g. {{=<% %>=}}.
+          i++;
+          closeTag = "=" + closeTag;
+          callback = function (source) {
+            tags = trim(source).split(/\s+/);
+            nextOpenTag = tags[0];
+            nextCloseTag = tags[tags.length - 1];
+            return "";
+          };
+          break;
+
+        case ">": // Include partial.
+          i++;
+          callback = function (source) {
+            var name = trim(source);
+            return [
+              '");',
+              line,
+              'var partial = partials["' + name + '"];',
+              'if (partial) {',
+              '  send(render(partial, stack[stack.length - 1], partials));',
+              '}',
+              'send("'
+            ].join("\n");
+          };
+          break;
+
+        case "{": // Plain variable.
+          closeTag = "}" + closeTag;
+          // fall through
+
+        case "&": // Plain variable.
+          i++;
+          hasTag = true;
+          callback = function (source) {
+            var name = trim(source);
+            return [
+              '");',
+              line,
+              'send(' + findFor(name) + ');',
+              'send("'
+            ].join("\n");
+          };
+          break;
+
+        default: // Escaped variable.
+          hasTag = true;
+          callback = function (source) {
+            var name = trim(source);
+            return [
+              '");',
+              line,
+              'send(escapeHTML(' + findFor(name) + '));',
+              'send("'
+            ].join("\n");
+          };
+        }
+
+        var end = template.indexOf(closeTag, i);
+
+        if (end === -1) {
+          throw new TemplateError('Tag "' + openTag + '" was not closed properly');
+        }
+
+        var source = template.substring(i, end);
+
+        if (callback) {
+          code.push(callback(source));
+        }
+
+        // Maintain lineno count for \n in source.
+        var n = 0;
+        while (~(n = source.indexOf("\n", n))) {
+          lineno++;
+          n++;
+        }
+
+        i = end + closeTag.length - 1;
+
+        openTag = nextOpenTag;
+        closeTag = nextCloseTag;
+      } else {
+        c = template.substr(i, 1);
+
+        switch (c) {
+        case '"':
+        case "\\":
+          nonSpace = true;
+          code.push("\\" + c);
+          break;
+        case "\n":
+          spaces.push(code.length);
+          code.push("\\n");
+
+          // Check for whitespace on the current line.
+          stripSpace();
+
+          lineno++;
+          break;
+        default:
+          if (isWhitespace(c)) {
+            spaces.push(code.length);
+          } else {
+            nonSpace = true;
+          }
+
+          code.push(c);
+        }
       }
     }
-  });
-}();
+
+    // Clean up any whitespace from a closing {{tag}} that was at the end
+    // of the template without a trailing \n.
+    stripSpace();
+
+    if (sectionStack.length != 0) {
+      throw new TemplateError('Section "' + sectionStack[sectionStack.length - 1].name + '" was not closed properly');
+    }
+
+    code.push('");');
+    code.push("\nsend(null);"); // Send null as the last operation.
+    code.push("\n} catch (e) { throw {error: e, line: line}; }");
+
+    var body = code.join("");
+
+    // TODO: Make safe for environments that don't support console.log.
+    if (options.debug) {
+      console.log(body);
+    }
+
+    return body;
+  }
+
+  /**
+   * Used by `compile` to generate a reusable function for the given `template`.
+   */
+  function _compile(template, options) {
+    var args = "view,partials,send,stack,find,escapeHTML,sendSection,render";
+    var body = parse(template, options);
+    var fn = new Function(args, body);
+
+    /**
+     * This anonymous function wraps the generated function so we can do
+     * argument coercion, setup some variables, and handle any errors
+     * encountered while executing it.
+     */
+    return function (view, partials, callback) {
+      if (typeof partials == "function") {
+        callback = partials;
+        partials = {};
+      }
+
+      partials = partials || {};
+
+      var buffer = []; // output buffer
+
+      var send;
+      if (typeof callback == "function") {
+        send = callback;
+      } else {
+        send = function (chunk) {
+          buffer.push(chunk);
+        };
+      }
+
+      var stack = [view]; // context stack
+
+      var find = function (name) {
+        return findName(name, stack);
+      };
+
+      try {
+        fn(view, partials, send, stack, find, escapeHTML, sendSection, render);
+      } catch (e) {
+        addDebugInfo(e.error, template, options.file || "file", e.line);
+        throw e.error;
+      }
+
+      if (!callback) {
+        return buffer.join("");
+      }
+    };
+  }
+
+  // Cache of pre-compiled templates.
+  var _cache = {};
+
+  /**
+   * Clear the cache of compiled templates.
+   */
+  function clearCache() {
+    _cache = {};
+  }
+
+  /**
+   * Compiles the given `template` into a reusable function using the given
+   * `options`. In addition to the options accepted by Mustache.parse,
+   * recognized options include the following:
+   *
+   *   - file     The name of the file the template comes from (displayed in
+   *              error messages)
+   *   - cache    Set `false` to bypass any pre-compiled version of the given
+   *              template. Otherwise, a given `template` string will be cached
+   *              the first time it is parsed
+   */
+  function compile(template, options) {
+    options = options || {};
+
+    // Use a pre-compiled version from the cache if we have one.
+    if (options.cache !== false) {
+      if (!_cache[template]) {
+        _cache[template] = _compile(template, options);
+      }
+
+      return _cache[template];
+    }
+
+    return _compile(template, options);
+  }
+
+  /**
+   * High-level function that renders the given `template` using the given
+   * `view`, `partials`, and `callback`. The `callback` is used to return the
+   * output piece by piece, as it is rendered. When done, the callback will
+   * receive `null` as its argument, after which it will not be called any more.
+   * If no callback is given, the complete rendered template will be used as the
+   * return value for the function.
+   *
+   * Note: If no partials are needed, the third argument may be the callback.
+   * If you need to use any of the template options, you should compile in a
+   * separate step, and then execute that compiled function.
+   */
+  function render(template, view, partials, callback) {
+    if (typeof partials == "function") {
+      callback = partials;
+      partials = null;
+    }
+
+    return compile(template)(view, partials, callback);
+  }
+
+})(Mustache);
