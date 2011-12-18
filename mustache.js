@@ -464,6 +464,9 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
 
     var body = code.join("");
 
+    // Ignore empty send("") statements.
+    body = body.replace(/send\(""\);\n/g, "");
+
     // TODO: Make safe for environments that don't support console.log.
     if (options.debug) {
       console.log(body);
