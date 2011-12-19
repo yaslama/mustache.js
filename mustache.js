@@ -364,7 +364,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
             var name = trim(source);
             return [
               '");',
-              line,
+              'line = ' + line + ';',
               'send(' + findFor(name) + ');',
               'send("'
             ].join("\n");
