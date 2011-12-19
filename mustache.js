@@ -32,20 +32,20 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
   } else {
     isArray = function (obj) {
       return _toString.call(obj) == "[object Array]";
-    }
+    };
   }
 
   var forEach;
   if (_forEach) {
     forEach = function (obj, callback, scope) {
       return _forEach.call(obj, callback, scope);
-    }
+    };
   } else {
     forEach = function (obj, callback, scope) {
       for (var i = 0, len = obj.length; i < len; ++i) {
         callback.call(scope, obj[i], i, obj);
       }
-    }
+    };
   }
 
   var spaceRe = /^\s*$/;
@@ -58,7 +58,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
   if (_trim) {
     trim = function (string) {
       return string == null ? "" : _trim.call(string);
-    }
+    };
   } else {
     var trimLeft, trimRight;
 
@@ -74,7 +74,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
     trim = function (string) {
       return string == null ? "" :
         String(string).replace(trimLeft, "").replace(trimRight, "");
-    }
+    };
   }
 
   /**
@@ -154,23 +154,12 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
   }
 
   /**
-   * The base class for all template errors.
-   */
-  function TemplateError(message, template, file, line) {
-    Error.call(this);
-    if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, this.constructor); // V8
-    }
-    this.name = "TemplateError";
-    this.message = message;
-    addDebugInfo(this, template, file, line);
-  }
-
-  /**
-   * Adds the `template`, `file`, and `line` properties to the given `error`
+   * Adds the `template`, `line`, and `file` properties to the given error
    * object and alters the message to provide more useful debugging information.
    */
-  function addDebugInfo(error, template, file, line) {
+  function debug(e, template, line, file) {
+    file = file || "<template>";
+
     var lines = template.split("\n"),
         start = Math.max(line - 3, 0),
         end = Math.min(lines.length, line + 3),
@@ -182,15 +171,12 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
       context[i] = (c == line ? " >> " : "    ") + context[i];
     }
 
-    error.template = template;
-    error.file = file;
-    error.line = line;
-    error.message = [
-      (file || "template") + ":" + line,
-      context.join("\n"),
-      "",
-      error.message
-    ].join("\n");
+    e.template = template;
+    e.line = line;
+    e.file = file;
+    e.message = [file + ":" + line, context.join("\n"), "", e.message].join("\n");
+
+    return e;
   }
 
   // The following two snippets of code are used to buffer content while the
@@ -214,6 +200,8 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
    * with the proper arguments, will render the template. Recognized options
    * include the following:
    *
+   *   - file     The name of the file the template comes from (displayed in
+   *              error messages)
    *   - tags     An array of open and close tags the `template` uses. Defaults
    *              to the value of Mustache.tags
    *   - debug    Set `true` to print the body of the generated function
@@ -253,12 +241,11 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
       hasTag = false;
     };
 
-    var lineno = 1, c, sectionStack = [], callback, line, nextOpenTag, nextCloseTag;
+    var line = 1, c, sectionStack = [], callback, nextOpenTag, nextCloseTag;
     for (var i = 0, len = template.length; i < len; ++i) {
       if (template.slice(i, i + openTag.length) == openTag) {
         i += openTag.length;
         c = template.substr(i, 1);
-        line = "line = " + lineno + ";";
         nextOpenTag = openTag;
         nextCloseTag = closeTag;
 
@@ -275,14 +262,14 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
             var name = trim(source);
 
             if (name == "") {
-              throw new TemplateError("Section name may not be empty");
+              throw debug(new Error("Section name may not be empty"), template, line, options.file);
             }
 
             sectionStack.push({name: name, inverted: true});
 
             return [
               '");',
-              line,
+              'line = ' + line + ';',
               'var value = ' + findFor(name) + ';',
               bufferStart,
               'send("'
@@ -296,14 +283,14 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
             var name = trim(source);
 
             if (name == "") {
-              throw new TemplateError("Section name may not be empty");
+              throw debug(new Error("Section name may not be empty"), template, line, options.file);
             }
 
             sectionStack.push({name: name});
 
             return [
               '");',
-              line,
+              'line = ' + line + ';',
               'var value = ' + findFor(name) + ';',
               bufferStart,
               'send("'
@@ -318,7 +305,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
             var openName = sectionStack.length != 0 && sectionStack[sectionStack.length - 1].name;
 
             if (!openName || name != openName) {
-              throw new TemplateError('Section named "' + name + '" was never opened');
+              throw debug(new Error('Section named "' + name + '" was never opened'), template, line, file);
             }
 
             var section = sectionStack.pop();
@@ -356,7 +343,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
             var name = trim(source);
             return [
               '");',
-              line,
+              'line = ' + line + ';',
               'var partial = partials["' + name + '"];',
               'if (partial) {',
               '  send(render(partial, stack[stack.length - 1], partials));',
@@ -390,7 +377,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
             var name = trim(source);
             return [
               '");',
-              line,
+              'line = ' + line + ';',
               'send(escapeHTML(' + findFor(name) + '));',
               'send("'
             ].join("\n");
@@ -400,7 +387,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
         var end = template.indexOf(closeTag, i);
 
         if (end === -1) {
-          throw new TemplateError('Tag "' + openTag + '" was not closed properly');
+          throw debug(new Error('Tag "' + openTag + '" was not closed properly'), template, line, options.file);
         }
 
         var source = template.substring(i, end);
@@ -409,10 +396,10 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
           code.push(callback(source));
         }
 
-        // Maintain lineno count for \n in source.
+        // Maintain line count for \n in source.
         var n = 0;
         while (~(n = source.indexOf("\n", n))) {
-          lineno++;
+          line++;
           n++;
         }
 
@@ -436,7 +423,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
           // Check for whitespace on the current line.
           stripSpace();
 
-          lineno++;
+          line++;
           break;
         default:
           if (isWhitespace(c)) {
@@ -455,7 +442,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
     stripSpace();
 
     if (sectionStack.length != 0) {
-      throw new TemplateError('Section "' + sectionStack[sectionStack.length - 1].name + '" was not closed properly');
+      throw debug(new Error('Section "' + sectionStack[sectionStack.length - 1].name + '" was not closed properly'), template, line, options.file);
     }
 
     code.push('");');
@@ -516,8 +503,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
       try {
         fn(view, partials, send, stack, find, escapeHTML, sendSection, render);
       } catch (e) {
-        addDebugInfo(e.error, template, options.file || "file", e.line);
-        throw e.error;
+        throw debug(e.error, template, e.line, options.file);
       }
 
       if (!callback) {
@@ -541,8 +527,6 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
    * `options`. In addition to the options accepted by Mustache.parse,
    * recognized options include the following:
    *
-   *   - file     The name of the file the template comes from (displayed in
-   *              error messages)
    *   - cache    Set `false` to bypass any pre-compiled version of the given
    *              template. Otherwise, a given `template` string will be cached
    *              the first time it is parsed
