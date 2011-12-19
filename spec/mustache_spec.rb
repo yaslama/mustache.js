@@ -206,7 +206,7 @@ describe "mustache" do
 
   context "suite" do
     before(:each) do
-      $stdout.write "Verifying that we ran at the tests in at least one engine ... "
+      $stdout.write "Verifying that we ran the tests in at least one engine ... "
     end
 
     after(:each) do
