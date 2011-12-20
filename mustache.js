@@ -264,7 +264,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
         nextOpenTag = openTag;
         nextCloseTag = closeTag;
 
-        // TODO: This switch statement is probably slow. Does it matter?
+        // TODO: This switch statement may be slow. Does it matter?
         switch (c) {
         case "!": // Comment.
           i++;
