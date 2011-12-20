@@ -81,21 +81,41 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
    * Looks up the value of the given `name` in the given context `stack`.
    */
   function findName(name, stack) {
-    var context, value;
+    var names = name.split(".");
+    var lastIndex = names.length - 1;
+    var target = names[lastIndex];
 
-    var i = stack.length;
+    var localStack = stack.slice(0); // Don't modify original stack.
+    var stackLength = localStack.length;
+
+    var context, value, i = stackLength;
     while (i) {
+      localStack = localStack.slice(0, stackLength);
       context = stack[--i];
 
-      if (name in context) {
-        value = context[name];
+      for (var j = 0; j < lastIndex; ++j) {
+        context = context[names[j]];
+
+        if (context == null) {
+          break;
+        }
+
+        localStack.push(context);
+      }
+
+      if (context == null) {
+        continue;
+      }
+
+      if (target in context) {
+        value = context[target];
         break;
       }
     }
 
     // If the value is a function, call it in the current context.
     if (typeof value == "function") {
-      value = value.call(stack[stack.length - 1]);
+      value = value.call(localStack[localStack.length - 1]);
     }
 
     if (value == null) {
