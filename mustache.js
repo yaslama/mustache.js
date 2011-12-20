@@ -85,16 +85,14 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
     var lastIndex = names.length - 1;
     var target = names[lastIndex];
 
-    var localStack = stack.slice(0); // Don't modify original stack.
-    var stackLength = localStack.length;
-
-    var context, value, i = stackLength;
+    var value, context, i = stack.length, j, localStack;
     while (i) {
-      localStack = localStack.slice(0, stackLength);
+      localStack = stack.slice(0);
       context = stack[--i];
 
-      for (var j = 0; j < lastIndex; ++j) {
-        context = context[names[j]];
+      j = 0;
+      while (j < lastIndex) {
+        context = context[names[j++]];
 
         if (context == null) {
           break;
@@ -103,11 +101,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
         localStack.push(context);
       }
 
-      if (context == null) {
-        continue;
-      }
-
-      if (target in context) {
+      if (context && target in context) {
         value = context[target];
         break;
       }
@@ -118,11 +112,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
       value = value.call(localStack[localStack.length - 1]);
     }
 
-    if (value == null) {
-      return "";
-    }
-
-    return value;
+    return value == null ? "" : value;
   }
 
   /**
