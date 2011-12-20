@@ -340,11 +340,10 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
         case ">": // Include partial.
           i++;
           callback = function (source) {
-            var name = trim(source);
             return [
               '");',
               'line = ' + line + ';',
-              'var partial = partials["' + name + '"];',
+              'var partial = partials["' + trim(source) + '"];',
               'if (partial) {',
               '  send(render(partial, stack[stack.length - 1], partials));',
               '}',
@@ -361,11 +360,10 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
           i++;
           hasTag = true;
           callback = function (source) {
-            var name = trim(source);
             return [
               '");',
               'line = ' + line + ';',
-              'send(' + findFor(name) + ');',
+              'send(' + findFor(trim(source)) + ');',
               'send("'
             ].join("\n");
           };
@@ -374,11 +372,10 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
         default: // Escaped variable.
           hasTag = true;
           callback = function (source) {
-            var name = trim(source);
             return [
               '");',
               'line = ' + line + ';',
-              'send(escapeHTML(' + findFor(name) + '));',
+              'send(escapeHTML(' + findFor(trim(source)) + '));',
               'send("'
             ].join("\n");
           };
