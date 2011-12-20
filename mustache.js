@@ -204,8 +204,8 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
     return e;
   }
 
-  // The following two snippets of code are used to buffer content while the
-  // template is rendering.
+  // The following two snippets of code are used to buffer content inside a
+  // section of the template.
 
   var bufferStart = [
     'var callback = (function () {',
