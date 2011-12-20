@@ -112,16 +112,21 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
     return name == "." ? "stack[stack.length - 1]" : 'find("' + name + '")';
   }
 
+  var escapeMap = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': '&quot;',
+    "'": '&#39;'
+  };
+
   /**
    * Returns an HTML-safe version of the given `string`.
    */
   function escapeHTML(string) {
-    return String(string)
-      .replace(/&(?!\w+;)/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
+    return String(string).replace(/&(?!\w+;)|[<>"']/g, function (s) {
+      return escapeMap[s] || s;
+    });
   }
 
   function sendSection(send, value, callback, stack, inverted) {
