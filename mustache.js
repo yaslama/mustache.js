@@ -198,6 +198,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
   // section of the template.
 
   var bufferStart = [
+    '',
     'var callback = (function () {',
     '  var buffer, send = function (chunk) { buffer.push(chunk); };',
     '  return function () {',
@@ -205,6 +206,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
   ].join("\n");
 
   var bufferEnd = [
+    '',
     '    return buffer.join("");',
     '  };',
     '})();'
@@ -231,11 +233,9 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
         closeTag = tags[tags.length - 1];
 
     var code = [
-      [
-        "var line = 1;", // keep track of source line number
-        "try {",
-        'send("'
-      ].join("\n")
+      "var line = 1;", // keep track of source line number
+      "\ntry {",
+      '\nsend("'
     ];
 
     var spaces = [],      // indices of whitespace in code for the current line
@@ -256,11 +256,13 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
       hasTag = false;
     };
 
-    var line = 1, c, sectionStack = [], callback, nextOpenTag, nextCloseTag;
+    var sectionStack = [];
+    var line = 1, c, updateLine, callback, nextOpenTag, nextCloseTag;
     for (var i = 0, len = template.length; i < len; ++i) {
       if (template.slice(i, i + openTag.length) == openTag) {
         i += openTag.length;
         c = template.substr(i, 1);
+        updateLine = '\nline = ' + line + ';';
         nextOpenTag = openTag;
         nextCloseTag = closeTag;
 
@@ -271,24 +273,28 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
           callback = null;
           break;
 
-        case "^": // Start "empty variable" section.
+        case "=": // Change open/close tags, e.g. {{=<% %>=}}.
+          i++;
+          closeTag = "=" + closeTag;
+          callback = function (source) {
+            tags = trim(source).split(/\s+/);
+            nextOpenTag = tags[0];
+            nextCloseTag = tags[tags.length - 1];
+          };
+          break;
+
+        case ">": // Include partial.
           i++;
           callback = function (source) {
-            var name = trim(source);
-
-            if (name == "") {
-              throw debug(new Error("Section name may not be empty"), template, line, options.file);
-            }
-
-            sectionStack.push({name: name, inverted: true});
-
-            return [
+            code.push(
               '");',
-              'line = ' + line + ';',
-              'var value = ' + findFor(name) + ';',
-              bufferStart,
-              'send("'
-            ].join("\n");
+              updateLine,
+              '\nvar partial = partials["' + trim(source) + '"];',
+              '\nif (partial) {',
+              '\n  send(render(partial, stack[stack.length - 1], partials));',
+              '\n}',
+              '\nsend("'
+            );
           };
           break;
 
@@ -303,13 +309,34 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
 
             sectionStack.push({name: name});
 
-            return [
+            code.push(
               '");',
-              'line = ' + line + ';',
-              'var value = ' + findFor(name) + ';',
+              updateLine,
+              '\nvar value = ' + findFor(name) + ';',
               bufferStart,
-              'send("'
-            ].join("\n");
+              '\nsend("'
+            );
+          };
+          break;
+
+        case "^": // Start inverted section.
+          i++;
+          callback = function (source) {
+            var name = trim(source);
+
+            if (name == "") {
+              throw debug(new Error("Section name may not be empty"), template, line, options.file);
+            }
+
+            sectionStack.push({name: name, inverted: true});
+
+            code.push(
+              '");',
+              updateLine,
+              '\nvar value = ' + findFor(name) + ';',
+              bufferStart,
+              '\nsend("'
+            );
           };
           break;
 
@@ -324,46 +351,15 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
             }
 
             var section = sectionStack.pop();
-            var code = [
-              '");',
-              bufferEnd
-            ];
+            code.push('");', bufferEnd);
 
             if (section.inverted) {
-              code.push("sendSection(send,value,callback,stack,true);");
+              code.push("\nsendSection(send,value,callback,stack,true);");
             } else {
-              code.push("sendSection(send,value,callback,stack);");
+              code.push("\nsendSection(send,value,callback,stack);");
             }
 
-            code.push('send("');
-
-            return code.join("\n");
-          };
-          break;
-
-        case "=": // Change open/close tags, e.g. {{=<% %>=}}.
-          i++;
-          closeTag = "=" + closeTag;
-          callback = function (source) {
-            tags = trim(source).split(/\s+/);
-            nextOpenTag = tags[0];
-            nextCloseTag = tags[tags.length - 1];
-            return "";
-          };
-          break;
-
-        case ">": // Include partial.
-          i++;
-          callback = function (source) {
-            return [
-              '");',
-              'line = ' + line + ';',
-              'var partial = partials["' + trim(source) + '"];',
-              'if (partial) {',
-              '  send(render(partial, stack[stack.length - 1], partials));',
-              '}',
-              'send("'
-            ].join("\n");
+            code.push('\nsend("');
           };
           break;
 
@@ -375,24 +371,24 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
           i++;
           hasTag = true;
           callback = function (source) {
-            return [
+            code.push(
               '");',
-              'line = ' + line + ';',
-              'send(' + findFor(trim(source)) + ');',
-              'send("'
-            ].join("\n");
+              updateLine,
+              '\nsend(' + findFor(trim(source)) + ');',
+              '\nsend("'
+            );
           };
           break;
 
         default: // Escaped variable.
           hasTag = true;
           callback = function (source) {
-            return [
+            code.push(
               '");',
-              'line = ' + line + ';',
-              'send(escapeHTML(' + findFor(trim(source)) + '));',
-              'send("'
-            ].join("\n");
+              updateLine,
+              '\nsend(escapeHTML(' + findFor(trim(source)) + '));',
+              '\nsend("'
+            );
           };
         }
 
@@ -405,7 +401,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
         var source = template.substring(i, end);
 
         if (callback) {
-          code.push(callback(source));
+          callback(source);
         }
 
         // Maintain line count for \n in source.
@@ -431,10 +427,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
         case "\n":
           spaces.push(code.length);
           code.push("\\n");
-
-          // Check for whitespace on the current line.
-          stripSpace();
-
+          stripSpace(); // Check for whitespace on the current line.
           line++;
           break;
         default:
@@ -457,14 +450,14 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
       throw debug(new Error('Section "' + sectionStack[sectionStack.length - 1].name + '" was not closed properly'), template, line, options.file);
     }
 
-    code.push('");');
-    code.push("\nsend(null);"); // Send null as the last operation.
-    code.push("\n} catch (e) { throw {error: e, line: line}; }");
-
-    var body = code.join("");
+    code.push(
+      '");',
+      "\nsend(null);", // Send null as the last operation.
+      "\n} catch (e) { throw {error: e, line: line}; }"
+    );
 
     // Ignore empty send("") statements.
-    body = body.replace(/send\(""\);\n/g, "");
+    var body = code.join("").replace(/send\(""\);\n/g, "");
 
     // TODO: Make safe for environments that don't support console.log.
     if (options.debug) {
