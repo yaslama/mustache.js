@@ -239,21 +239,20 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
     ];
 
     var spaces = [],      // indices of whitespace in code for the current line
-        nonSpace = false, // is there a non-space char on the current line?
-        hasTag = false;   // is there a content {{tag}} on the current line?
+        nonSpace = false; // is there a non-space char on the current line?
 
     // Strips all space characters from the code array for the current line
     // if there was a {{tag}} on it and otherwise only spaces.
     var stripSpace = function () {
-      if (!hasTag && !nonSpace && !options.space) {
+      if (!nonSpace && !options.space) {
         while (spaces.length) {
           code.splice(spaces.pop(), 1);
         }
+      } else {
+        spaces = [];
       }
 
-      spaces = [];
       nonSpace = false;
-      hasTag = false;
     };
 
     var sectionStack = [];
@@ -369,7 +368,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
 
         case "&": // Plain variable.
           i++;
-          hasTag = true;
+          nonSpace = true;
           callback = function (source) {
             code.push(
               '");',
@@ -381,7 +380,7 @@ var Mustache = (typeof module != "undefined" && module.exports) || {};
           break;
 
         default: // Escaped variable.
-          hasTag = true;
+          nonSpace = true;
           callback = function (source) {
             code.push(
               '");',
